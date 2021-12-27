@@ -287,7 +287,7 @@ def train(model, generator, discriminator, optimizer_G, optimizer_D, data_loader
                     else:
                         save_image(fake_imgs.data[:25], "./images/DCGAN/train/%d.png" % batches_done, nrow=5, normalize=True)
 
-                batches_done += N_CRITIC
+                batches_done += disc_iterations
                 G_losses.append(g_loss.item())
                 Negative_D_losses.append(-d_loss.item())
 
