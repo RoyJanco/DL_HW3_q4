@@ -44,57 +44,13 @@ BATCH_SIZE = 64
 DCGAN_FEATURES = 64  # Used for the DCGAN
 
 
-# class Generator(nn.Module):
-#     def __init__(self):
-#         super(Generator, self).__init__()
-#
-#         def block(in_feat, out_feat, normalize=True):
-#             layers = [nn.Linear(in_feat, out_feat)]
-#             if normalize:
-#                 layers.append(nn.BatchNorm1d(out_feat, 0.8))
-#             layers.append(nn.LeakyReLU(0.2, inplace=True))
-#             return layers
-#
-#         self.model = nn.Sequential(
-#             *block(LATENT_DIM, 128, normalize=False),
-#             *block(128, 256),
-#             *block(256, 512),
-#             *block(512, 1024),
-#             nn.Linear(1024, int(np.prod(IMG_SHAPE))),
-#             nn.Tanh()
-#         )
-#
-#     def forward(self, z):
-#         img = self.model(z)
-#         img = img.view(img.shape[0], *IMG_SHAPE)
-#         return img
-#
-#
-# class Discriminator(nn.Module):
-#     def __init__(self):
-#         super(Discriminator, self).__init__()
-#
-#         self.model = nn.Sequential(
-#             nn.Linear(int(np.prod(IMG_SHAPE)), 512),
-#             nn.LeakyReLU(0.2, inplace=True),
-#             nn.Linear(512, 256),
-#             nn.LeakyReLU(0.2, inplace=True),
-#             nn.Linear(256, 1),
-#         )
-#
-#     def forward(self, img):
-#         img_flat = img.view(img.shape[0], -1)
-#         validity = self.model(img_flat)
-#         return validity
-#
-#
-
 def initialize_weights(net):
     for m in net.modules():
         classname = m.__class__.__name__
         if classname.find('Conv') != -1 or classname.find('Linear') != -1:
             m.weight.data.normal_(0, 0.02)
-            m.bias.data.zero_()
+            if m.bias is not None:
+                m.bias.data.zero_()
         elif classname.find('BatchNorm') != -1:
           nn.init.normal_(m.weight.data, 1.0, 0.02)
           nn.init.constant_(m.bias.data, 0)
@@ -128,6 +84,7 @@ class DCGAN_Generator(nn.Module):
             # nn.Tanh()
             # # state size. (nc) x 64 x 64
         )
+        initialize_weights(self)
 
     def forward(self, input):
         input = input.view(-1, LATENT_DIM, 1, 1)
@@ -157,6 +114,7 @@ class DCGAN_Discriminator(nn.Module):
             # nn.Conv2d(DCGAN_FEATURES * 8, 1, 4, 1, 0, bias=False),
             nn.Sigmoid()
         )
+        initialize_weights(self)
 
     def forward(self, input):
         out = self.main(input)
@@ -164,7 +122,7 @@ class DCGAN_Discriminator(nn.Module):
         return out
 
 
-class Generator(nn.Module):
+class WGAN_Generator(nn.Module):
     def __init__(self, dim=LATENT_DIM):
         super().__init__()
         self.dim = LATENT_DIM
@@ -196,7 +154,7 @@ class Generator(nn.Module):
         return x
 
 
-class Discriminator(nn.Module):
+class WGAN_Discriminator(nn.Module):
     def __init__(self):
         super().__init__()
         self.input_dim = 1
@@ -250,171 +208,17 @@ def compute_gradient_penalty(D, real_samples, fake_samples):
     return gradient_penalty
 
 
-def train_WGAN(generator, discriminator, optimizer_G, optimizer_D, data_loader, n_epochs):
+def train(model, generator, discriminator, optimizer_G, optimizer_D, data_loader, n_epochs):
     # ----------
     #  Training
     # ----------
-    D_losses, G_losses = [], []
-    batches_done = 0
-    for epoch in range(n_epochs):
-        for i, (imgs, _) in enumerate(data_loader):
-
-            # Configure input
-            real_imgs = Variable(imgs.type(Tensor)).to(device)
-
-            # ---------------------
-            #  Train Discriminator
-            # ---------------------
-
-            optimizer_D.zero_grad()
-
-            # Sample noise as generator input
-            z = Variable(Tensor(np.random.normal(0, 1, (imgs.shape[0], LATENT_DIM)))).to(device)
-
-            # Generate a batch of images pytorch
-            fake_imgs = generator(z)
-
-            # Real images pytorch
-            real_validity = discriminator(real_imgs)
-            # Fake images pytorch
-            fake_validity = discriminator(fake_imgs)
-            # Gradient penalty
-            gradient_penalty = compute_gradient_penalty(discriminator, real_imgs.data, fake_imgs.data)
-            # Adversarial loss
-            d_loss = -torch.mean(real_validity) + torch.mean(fake_validity) + LAMBDA_GP * gradient_penalty
-
-            d_loss.backward()
-            optimizer_D.step()
-
-            optimizer_G.zero_grad()
-
-            # Train the generator every n_critic steps
-            if i % N_CRITIC == 0:
-
-                # -----------------
-                #  Train Generator
-                # -----------------
-
-                # Generate a batch of images pytorch
-                fake_imgs = generator(z)
-                # Loss measures generator's ability to fool the discriminator
-                # Train on fake images pytorch
-                fake_validity = discriminator(fake_imgs)
-                g_loss = -torch.mean(fake_validity)
-
-                g_loss.backward()
-                optimizer_G.step()
-
-                if i % 20 == 0:
-                    print(
-                        "[Epoch %d/%d] [Batch %d/%d] [D loss: %f] [G loss: %f]"
-                        % (epoch, n_epochs, i, len(data_loader), d_loss.item(), g_loss.item())
-                    )
-
-                if batches_done % SAMPLE_INTERVAL == 0:
-                    save_image(fake_imgs.data[:25], "./images/%d.png" % batches_done, nrow=5, normalize=True)
-
-                batches_done += N_CRITIC
-                G_losses.append(g_loss.item())
-                D_losses.append(d_loss.item())
-    plt.figure()
-    # epochs_range = np.arange(1, n_epochs+1)
-    plt.plot(D_losses, label='Discriminator')
-    plt.plot(G_losses, label='Generator')
-    plt.xlabel('Iterations')
-    plt.ylabel('Loss')
-    plt.title('Generator and Discriminator losses')
-    plt.show()
-
-
-def train_DCGAN(generator, discriminator, optimizer_G, optimizer_D, data_loader, n_epochs):
-    # ----------
-    #  Training
-    # ----------
-    D_losses, G_losses = [], []
-    batches_done = 0
-    for epoch in range(n_epochs):
-        for i, (imgs, _) in enumerate(data_loader):
-
-
-            # Configure input
-            real_imgs = Variable(imgs.type(Tensor)).to(device)
-
-            # ---------------------
-            #  Train Discriminator
-            # ---------------------
-
-            optimizer_D.zero_grad()
-
-            # Sample noise as generator input
-            z = Variable(Tensor(np.random.normal(0, 1, (imgs.shape[0], LATENT_DIM)))).to(device)
-
-            # Generate a batch of images pytorch
-            fake_imgs = generator(z)
-
-            # Real images pytorch
-            real_validity = discriminator(real_imgs)
-            # Fake images pytorch
-            fake_validity = discriminator(fake_imgs)
-
-            # Adversarial loss. We minimize this term:
-            d_loss = -(torch.mean(torch.log(real_validity)) + torch.mean(torch.log(1 - fake_validity)))
-
-            d_loss.backward()
-            optimizer_D.step()
-
-            optimizer_G.zero_grad()
-
-            # Train the generator every n_critic steps
-            if i % 1 == 0:
-
-                # -----------------
-                #  Train Generator
-                # -----------------
-
-                # Generate a batch of images pytorch
-                fake_imgs = generator(z)
-                # Loss measures generator's ability to fool the discriminator
-                # Train on fake images pytorch
-                fake_validity = discriminator(fake_imgs)
-                g_loss = -torch.mean(torch.log(fake_validity))
-
-                g_loss.backward()
-                optimizer_G.step()
-
-                if i % 20 == 0:
-                    print(
-                        "[Epoch %d/%d] [Batch %d/%d] [D loss: %f] [G loss: %f]"
-                        % (epoch, n_epochs, i, len(data_loader), d_loss.item(), g_loss.item())
-                    )
-
-                if batches_done % SAMPLE_INTERVAL == 0:
-                    save_image(fake_imgs.data[:25], "./images/%d.png" % batches_done, nrow=5, normalize=True)
-
-                batches_done += N_CRITIC
-                G_losses.append(g_loss.item())
-                D_losses.append(d_loss.item())
-    plt.figure()
-    # epochs_range = np.arange(1, n_epochs+1)
-    plt.plot(D_losses, label='Discriminator')
-    plt.plot(G_losses, label='Generator')
-    plt.xlabel('Iterations')
-    plt.ylabel('Loss')
-    plt.title('Generator and Discriminator losses')
-    plt.show()
-
-
-def train_generic(model, generator, discriminator, optimizer_G, optimizer_D, data_loader, n_epochs):
-    # ----------
-    #  Training
-    # ----------
-    D_losses, G_losses = [], []
+    Negative_D_losses, G_losses = [], []
     batches_done = 0
     if model == 'WGAN':
         disc_iterations = N_CRITIC
     else:
         disc_iterations = 1
-    for epoch in range(n_epochs):
+    for epoch in range(1, n_epochs+1):
         for i, (imgs, _) in enumerate(data_loader):
 
             # Configure input
@@ -478,14 +282,21 @@ def train_generic(model, generator, discriminator, optimizer_G, optimizer_D, dat
                     )
 
                 if batches_done % SAMPLE_INTERVAL == 0:
-                    save_image(fake_imgs.data[:25], "./images/%d.png" % batches_done, nrow=5, normalize=True)
+                    if model == 'WGAN':
+                        save_image(fake_imgs.data[:25], "./images/WGAN/train/%d.png" % batches_done, nrow=5, normalize=True)
+                    else:
+                        save_image(fake_imgs.data[:25], "./images/DCGAN/train/%d.png" % batches_done, nrow=5, normalize=True)
 
                 batches_done += N_CRITIC
                 G_losses.append(g_loss.item())
-                D_losses.append(d_loss.item())
+                Negative_D_losses.append(-d_loss.item())
+
+    torch.save(generator.state_dict(), './models/Generator_%s.pt' % model)
+    torch.save(discriminator.state_dict(), './models/Discriminator_%s.pt' % model)
+
     plt.figure()
     # epochs_range = np.arange(1, n_epochs+1)
-    plt.plot(-D_losses, label='Negative discriminator loss')
+    plt.plot(Negative_D_losses, label='Negative discriminator loss')
     plt.plot(G_losses, label='Generator loss')
     plt.legend()
     plt.xlabel('Generator iterations')
@@ -494,99 +305,44 @@ def train_generic(model, generator, discriminator, optimizer_G, optimizer_D, dat
     plt.show()
 
 
-def train_DCGAN_2(generator, discriminator, optimizer_G, optimizer_D, data_loader, n_epochs):
-    # Training Loop
-    real_label = 1
-    fake_label = 0
-    # Lists to keep track of progress
-    img_list = []
-    G_losses = []
-    D_losses = []
-    iters = 0
+def generate_images(model, data_loader, generator, num_images):
+    # Sample real images
+    real_imgs, labels = next(iter(data_loader))
+    for ii in range(num_images):
+        save_image(real_imgs[ii], "./images/real/%d.png" % ii, normalize=True)
 
-    # Initialize BCELoss function
-    criterion = nn.BCELoss()
+    # Sample noise as generator input
+    z = Variable(Tensor(np.random.normal(0, 1, (num_images, LATENT_DIM)))).to(device)
+    # Generate a batch of images pytorch
+    fake_imgs = generator(z)
+    for ii in range(num_images):
+        if model == 'WGAN':
+            save_image(fake_imgs.data[ii], "./images/WGAN/fake/%d.png" % ii, normalize=True)
+        else:
+            save_image(fake_imgs.data[ii], "./images/DCGAN/fake/%d.png" % ii, normalize=True)
 
-    # Create batch of latent vectors that we will use to visualize
-    #  the progression of the generator
-    fixed_noise = torch.randn(64, LATENT_DIM, 1, 1, device=device)
 
-    print("Starting Training Loop...")
-    # For each epoch
-    for epoch in range(n_epochs):
-        # For each batch in the dataloader
-        for i, data in enumerate(data_loader, 0):
+def load_pretrained_model(model):
+    if model == 'WGAN':
+        # WGAP-GP Training
+        generator = WGAN_Generator()
+        discriminator = WGAN_Discriminator()
+    else:
+        # DCGAN Training
+        generator = DCGAN_Generator()
+        discriminator = DCGAN_Discriminator()
 
-            ############################
-            # (1) Update D network: maximize log(D(x)) + log(1 - D(G(z)))
-            ###########################
-            ## Train with all-real batch
-            discriminator.zero_grad()
-            # Format batch
-            real_cpu = data[0].to(device)
-            b_size = real_cpu.size(0)
-            label = torch.full((b_size,), real_label, dtype=torch.float, device=device)
-            # Forward pass real batch through D
-            output = discriminator(real_cpu).view(-1)
-            # Calculate loss on all-real batch
-            errD_real = criterion(output, label)
-            # Calculate gradients for D in backward pass
-            errD_real.backward()
-            D_x = output.mean().item()
+    generator_state_dict = torch.load('./models/Generator_%s.pt' % model, map_location=torch.device(device))
+    discriminator_state_dict = torch.load('./models/Discriminator_%s.pt' % model, map_location=torch.device(device))
+    print(generator_state_dict.keys())
+    print(discriminator_state_dict.keys())
 
-            ## Train with all-fake batch
-            # Generate batch of latent vectors
-            noise = torch.randn(b_size, LATENT_DIM, 1, 1, device=device)
-            # Generate fake image batch with G
-            fake = generator(noise)
-            label.fill_(fake_label)
-            # Classify all fake batch with D
-            output = discriminator(fake.detach()).view(-1)
-            # Calculate D's loss on the all-fake batch
-            errD_fake = criterion(output, label)
-            # Calculate the gradients for this batch, accumulated (summed) with previous gradients
-            errD_fake.backward()
-            D_G_z1 = output.mean().item()
-            # Compute error of D as sum over the fake and the real batches
-            errD = errD_real + errD_fake
-            # Update D
-            optimizer_D.step()
+    generator.load_state_dict(generator_state_dict)
+    discriminator.load_state_dict(discriminator_state_dict)
+    generator.to(device)
+    discriminator.to(device)
+    return generator, discriminator
 
-            ############################
-            # (2) Update G network: maximize log(D(G(z)))
-            ###########################
-            generator.zero_grad()
-            label.fill_(real_label)  # fake labels are real for generator cost
-            # Since we just updated D, perform another forward pass of all-fake batch through D
-            output = discriminator(fake).view(-1)
-            # Calculate G's loss based on this output
-            errG = criterion(output, label)
-            # Calculate gradients for G
-            errG.backward()
-            D_G_z2 = output.mean().item()
-            # Update G
-            optimizer_G.step()
-
-            # Output training stats
-            if i % 20 == 0:
-                print('[%d/%d][%d/%d]\tLoss_D: %.4f\tLoss_G: %.4f\tD(x): %.4f\tD(G(z)): %.4f / %.4f'
-                      % (epoch, n_epochs, i, len(data_loader),
-                         errD.item(), errG.item(), D_x, D_G_z1, D_G_z2))
-
-            if i % SAMPLE_INTERVAL == 0:
-                save_image(fake.data[:25], "./images/%d.png" % i, nrow=5, normalize=True)
-
-            # Save Losses for plotting later
-            G_losses.append(errG.item())
-            D_losses.append(errD.item())
-
-            # Check how the generator is doing by saving G's output on fixed_noise
-            if (iters % 500 == 0) or ((epoch == n_epochs-1) and (i == len(data_loader)-1)):
-                with torch.no_grad():
-                    fake = generator(fixed_noise).detach().cpu()
-                img_list.append(vutils.make_grid(fake, padding=2, normalize=True))
-
-            iters += 1
 
 # Load data
 train_data = torch.utils.data.DataLoader(
@@ -621,8 +377,8 @@ train_data = torch.utils.data.DataLoader(
 model = 'WGAN'
 if model == 'WGAN':
     # WGAP-GP Training
-    generator = Generator()
-    discriminator = Discriminator()
+    generator = WGAN_Generator()
+    discriminator = WGAN_Discriminator()
 else:
     # DCGAN Training
     generator = DCGAN_Generator()
@@ -642,7 +398,10 @@ optimizer_G = torch.optim.Adam(generator.parameters(), lr=lr, betas=BETAS)
 optimizer_D = torch.optim.Adam(discriminator.parameters(), lr=lr, betas=BETAS)
 
 # train_DCGAN(generator, discriminator, optimizer_G, optimizer_D, train_data, n_epochs=1)
-train_generic(model, generator, discriminator, optimizer_G, optimizer_D, train_data, n_epochs=1)
+train(model, generator, discriminator, optimizer_G, optimizer_D, train_data, n_epochs=1)
 
+
+# generator, discriminator = load_pretrained_model(model)
+# generate_images(model, train_data, generator, 3)
 
 print('End')
